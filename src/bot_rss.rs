@@ -1,9 +1,14 @@
 use std::error::Error;
 use std::sync::Arc;
-
-// use std::sync::Mutex;
-use tokio::sync::Mutex;
+use std::env;
+use std::fs;
 use std::time::Duration;
+
+use json;
+use json::array;
+use json::object;
+
+use tokio::sync::Mutex;
 
 use rss::Channel;
 
@@ -111,19 +116,70 @@ impl RssFeeds {
 
     /// Load from db
     async fn load(&self) {
+        // Lock mutex
+        let mut feeds = self.feeds.lock().await;
 
+        // Parse json file
+        let contents = match std::fs::read_to_string(
+            env::var("HOME").expect("no home directory")
+            + "/.bot_rs/rss.json"
+        ) {
+            Err(what) => {
+                println!("Can't open rss.json {}", what);
+                return;
+            },
+            Ok(cont) => cont,
+        };
+        if contents.is_empty() {
+            println!("rss.json is empty");
+            return;
+        }
+
+        // Convert from json
+        let rules_json = json::parse(&contents).expect("invalid rss rules");
+        let mut new_feeds: Vec<RssFeedStatus> = vec![];
+        for r in rules_json.members() {
+            let url = r["url"].to_string();
+            let last_item_ts = r["last_item_ts"].as_i64().expect("last_item_ts must be i64");
+            let channels = r["channels"].members().map(
+                |cid| ChannelId::new(cid.as_u64().expect("channel id must be u64"))
+            ).collect::<Vec<ChannelId>>();
+            new_feeds.push(RssFeedStatus{ 
+                url: url.to_string(),
+                last_item_ts: last_item_ts,
+                channels: channels,
+            });
+        }
+
+        // Update feeds state
+        *feeds = new_feeds;
     }
 
     /// Write to db
     async fn store(&self) {
+        // Lock mutex
+        let mut feeds = self.feeds.lock().await;
 
+        // Covnvert to json
+        let mut jv: json::JsonValue = array![];
+        for f in feeds.iter_mut() {
+            jv.push(object! {
+                url: f.url.clone(),
+                last_item_ts: f.last_item_ts,
+                channels: f.channels.iter().map(|c| c.get()).collect::<Vec<u64>>(),
+            }).expect("impossible");
+        }
+
+        // Convert to json
+        fs::write(
+            env::var("HOME").expect("no home directory") + "/.bot_rs/rss.json",
+            jv.dump(),
+        ).expect("cannot write to rss.json");
     }
 
     /// Add a new rule
     pub async fn subscribe(&self, channel_id: ChannelId, feed_url: String) -> String {
         // self.load().await;
-
-
 
         for f in self.feeds.lock().await.iter_mut() {
             if f.url == feed_url {
@@ -148,13 +204,53 @@ impl RssFeeds {
         "Added new subscription".to_string()
     }
 
+    pub async fn unsubscribe(&self, channel_id: ChannelId, feed_url: String) -> String {
+        // TODO There should be no need for these state variables and ugly logic
+        let mut index = 0;
+        let mut remove = false;
+        let mut found = false;
+        for f in self.feeds.lock().await.iter_mut() {
+            if f.url == feed_url {
+                f.channels = f.channels.clone().into_iter().filter(|f| *f != channel_id).collect();
+                remove = f.channels.is_empty();
+                found = true;
+                if f.channels.is_empty() {
+                    self.feeds.lock().await.remove(index);
+                }
+                break;
+            }
+            index += 1;
+        }
+
+        if found {
+            if remove {
+                self.feeds.lock().await.remove(index);
+            }
+            self.store().await;
+            "unsubscribed".to_string()
+        } else {
+            "not found".to_string()
+        }
+    }
+
+    pub async fn channel_subs(&self, channel_id: ChannelId) -> String {
+        let mut ret: String = "".to_string();
+        for f in self.feeds.lock().await.iter() {
+            if f.channels.contains(&channel_id) {
+                ret += &f.url;
+            }
+        }
+        return ret;
+    }
+
     async fn cron(&self, http: &Arc<serenity::http::Http>) {
         // self.load().await;
+        // TODO do these in parallel
         for f in self.feeds.lock().await.iter_mut() {
             f.fetch(http).await;
         }
 
-        // check again every 5 mins
+        // Check again every 5 mins
         tokio::time::sleep(Duration::from_secs(60*5)).await;
         Box::pin(self.cron(http)).await;
     }

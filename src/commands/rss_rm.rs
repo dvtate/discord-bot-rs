@@ -12,16 +12,16 @@ pub async fn run(options: &[ResolvedOption<'_>], channel_id: &ChannelId, rssmgr:
         value: ResolvedValue::String(feed_url), ..
     }) = options.first()
     {
-        println!("/rssadd {}", feed_url);
-        rssmgr.subscribe(*channel_id, feed_url.to_string()).await
+        println!("/rssrm {}", feed_url);
+        rssmgr.unsubscribe(*channel_id, feed_url.to_string()).await
     } else {
         "Please provide a feed url".to_string()
     }
 }
 
 pub fn register() -> CreateCommand {
-    CreateCommand::new("rssadd")
-        .description("Subscribe to an rss feed here")
+    CreateCommand::new("rssrm")
+        .description("Unsubscribe to an rss feed here")
         .default_member_permissions(Permissions::MANAGE_CHANNELS)
         .dm_permission(true)
         .add_option(

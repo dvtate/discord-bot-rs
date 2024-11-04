@@ -5,11 +5,12 @@ use std::env;
 use std::sync::Arc;
 
 use bot_rss::RssFeeds;
-use serenity::{async_trait, client};
+use serenity::async_trait;
 use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage};
 use serenity::model::application::{Command, Interaction};
 use serenity::model::gateway::Ready;
-use serenity::model::id::GuildId;
+// use serenity::model::id::GuildId;
+// use serenity::model::guild::Member;
 use serenity::prelude::*;
 
 struct Handler {
@@ -20,11 +21,13 @@ struct Handler {
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Command(command) = interaction {
-            println!("Received command interaction: {command:#?}");
+            // println!("Received command interaction: {command:#?}");
 
             let content = match command.data.name.as_str() {
                 "ping" => Some(commands::ping::run(&command.data.options())),
                 "rssadd" => Some(commands::rss_add::run(&command.data.options(), &command.channel_id, &self.rss_mgr).await),
+                "rssrm" => Some(commands::rss_rm::run(&command.data.options(), &command.channel_id, &self.rss_mgr).await),
+                "rsssubs" => Some(commands::rss_subs::run(&command.data.options(), &command.channel_id, &self.rss_mgr).await),
                 _ => Some("not implemented :(".to_string()),
             };
 
@@ -38,15 +41,19 @@ impl EventHandler for Handler {
         }
     }
 
+    // TODO new member announcements
+    // async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
+    //     // new_member.guild_id
+    // }
+
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
 
-        if let Err(e) = Command::create_global_command(&ctx.http, commands::rss_add::register()).await {
-            panic!("wtf: {}", e);
-        }
-        Command::create_global_command(&ctx.http, commands::ping::register()).await;
-        
-       
+        Command::create_global_command(&ctx.http, commands::rss_add::register()).await.expect("invalid command");
+        Command::create_global_command(&ctx.http, commands::rss_rm::register()).await.expect("invalid command");
+        Command::create_global_command(&ctx.http, commands::rss_subs::register()).await.expect("invalid command");
+        Command::create_global_command(&ctx.http, commands::ping::register()).await.expect("invalid command");
+
         bot_rss::RssFeeds::start(&self.rss_mgr, &ctx.http).await;
     }
 }
