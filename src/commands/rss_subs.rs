@@ -7,7 +7,12 @@ use serenity::model::id::ChannelId;
 
 pub async fn run(_options: &[ResolvedOption<'_>], channel_id: &ChannelId, rssmgr: &Arc<RssFeeds>) -> String {
     println!("/rsssubs {}", channel_id);
-    rssmgr.channel_subs(*channel_id).await
+    let subs = rssmgr.channel_subs(*channel_id).await;
+    if subs.is_empty() {
+        "None".to_string()
+    } else {
+        subs
+    }
 }
 
 pub fn register() -> CreateCommand {

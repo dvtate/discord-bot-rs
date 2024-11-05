@@ -4,26 +4,35 @@ use std::env;
 use std::fs;
 use std::time::Duration;
 
-use json;
+use std::mem;
+
+use bytes::Buf;
+
 use json::array;
 use json::object;
 
 use tokio::sync::Mutex;
 
-use rss::Channel;
+use feed_rs;
 
 use reqwest;
 
 use serenity::all::MessageBuilder;
 use serenity::model::id::ChannelId;
 
-async fn fetch_feed<T: reqwest::IntoUrl>(url: T) -> Result<Channel, Box<dyn Error>> {
-    let content = reqwest::get(url)
-        .await?
-        .bytes()
-        .await?;
-    let channel = Channel::read_from(&content[..])?;
-    Ok(channel)
+macro_rules! log {
+    ($($arg:tt)*) => {
+        println!("RSS: {}", format_args!($($arg)*));
+    };
+}
+
+// Originally this function was async but I had to switch to feed_rs to handle different feed types and it's badly designed
+async fn fetch_feed<T: reqwest::IntoUrl>(url: T) -> Result<feed_rs::model::Feed, Box<dyn Error>> {
+    let content = reqwest::get(url.as_str().to_string()).await?.bytes().await?.reader();
+    let parser = feed_rs::parser::Builder::new().base_uri(Some(&url.as_str())).build();
+    let feed = parser.parse(content)?;
+    log!("Feed {} has {} entries.", &url.as_str(), feed.entries.len());
+    Ok(feed)
 }
 
 struct RssFeedEntry {
@@ -38,40 +47,40 @@ async fn get_new_feed_entries(feed: &mut RssFeedStatus) -> Vec<RssFeedEntry> {
 
     match fetch_feed(&feed.url).await {
         Err(why) => {
-            println!("failed to fetch rss feed: {why:?}");
+            log!("failed to fetch rss feed: {why:?}");
             return ret;
         },
         Ok(channel) => {
-            for item in channel.items {
+            for item in channel.entries {
                 // Rust hasn't implemented this RFC from 6+ years ago
                 // https://rust-lang.github.io/rfcs/2497-if-let-chains.html
-                if let Some(link) = item.link {
-                    if let Some(date) = item.pub_date {
-                        match chrono::DateTime::parse_from_rfc2822(&date) {
-                            Err(why) => {
-                                println!("failed to parse date: {date:?} : {why:?}");
-                                return vec![];
-                            },
-                            Ok(date) => {
-                                let ts = date.timestamp();
-                                if ts > max_ts {
-                                    max_ts = ts;
-                                }
+                if !item.links.is_empty() {
+                    if let Some(date) = item.published {
+                        let ts = date.timestamp();
+                        if ts <= 0 {
+                            log!("failed to parse publish date: {date:?}");
+                            return vec![];
+                        }
+                        
+                        if ts > max_ts {
+                            max_ts = ts;
+                        }
 
-                                if ts > feed.last_item_ts {
-                                    ret.push(RssFeedEntry {
-                                        link: link,
-                                        title: item.title.unwrap_or("".to_string()),
-                                    });
-                                }
-                            },
-                        };
+                        if ts > feed.last_item_ts {
+                            ret.push(RssFeedEntry {
+                                link: item.links[0].href.clone(),
+                                title: match item.title {
+                                    Some(t) => t.content,
+                                    None => "".to_string(),
+                                },
+                            });
+                        }
                         
                     } else {
-                        println!("Item missing pub_date");
+                        log!("Item missing pub_date");
                     }
                 } else {
-                    println!("Item missing link");
+                    log!("Item missing link");
                 }                
             }
         },
@@ -102,7 +111,7 @@ impl RssFeedStatus {
         for chanid in &self.channels {
             for msg in &msgs {
                 if let Err(why) = chanid.say(&http, msg).await {
-                    println!("failed to send message feed: {why:?}");
+                    log!("failed to send message feed: {why:?}");
                 };
             }
         }
@@ -125,13 +134,13 @@ impl RssFeeds {
             + "/.bot_rs/rss.json"
         ) {
             Err(what) => {
-                println!("Can't open rss.json {}", what);
+                log!("Can't open rss.json {}", what);
                 return;
             },
             Ok(cont) => cont,
         };
         if contents.is_empty() {
-            println!("rss.json is empty");
+            log!("rss.json is empty");
             return;
         }
 
@@ -152,17 +161,15 @@ impl RssFeeds {
         }
 
         // Update feeds state
-        *feeds = new_feeds;
+        let _ = mem::replace(&mut *feeds, new_feeds);
+        log!("loaded {} rules", feeds.len());
     }
 
     /// Write to db
     async fn store(&self) {
-        // Lock mutex
-        let mut feeds = self.feeds.lock().await;
-
         // Covnvert to json
         let mut jv: json::JsonValue = array![];
-        for f in feeds.iter_mut() {
+        for f in self.feeds.lock().await.iter_mut() {
             jv.push(object! {
                 url: f.url.clone(),
                 last_item_ts: f.last_item_ts,
@@ -181,17 +188,25 @@ impl RssFeeds {
     pub async fn subscribe(&self, channel_id: ChannelId, feed_url: String) -> String {
         // self.load().await;
 
+        let mut ret = false;
         for f in self.feeds.lock().await.iter_mut() {
             if f.url == feed_url {
+                if f.channels.contains(&channel_id) {
+                    return "Already subscribed".to_string();
+                }
                 f.channels.push(channel_id);
-                self.store().await;
-                return "Added subscription".to_string();
+                ret = true;
+                break;
             }
+        }
+        if ret {            
+            self.store().await;
+            return "Added subscription".to_string();
         }
 
         // Check feed is valid
         if let Err(why) = fetch_feed(&feed_url).await {
-            println!("Failed to fetch user-requested feed: {feed_url:?} -- {why:?}");
+            log!("Failed to fetch user-requested feed: {feed_url:?} -- {why:?}");
             return "Failed to fetch provided feed. Are you sure you typed it correctly?".to_string();
         }
 
@@ -209,28 +224,28 @@ impl RssFeeds {
         let mut index = 0;
         let mut remove = false;
         let mut found = false;
-        for f in self.feeds.lock().await.iter_mut() {
-            if f.url == feed_url {
-                f.channels = f.channels.clone().into_iter().filter(|f| *f != channel_id).collect();
-                remove = f.channels.is_empty();
-                found = true;
-                if f.channels.is_empty() {
-                    self.feeds.lock().await.remove(index);
+        {
+            let mut feeds = self.feeds.lock().await;
+            for f in &mut *feeds {
+                if f.url == feed_url {
+                    f.channels = f.channels.clone().into_iter().filter(|f| *f != channel_id).collect();
+                    remove = f.channels.is_empty();
+                    found = true;
+                    break;
                 }
-                break;
+                index += 1;
             }
-            index += 1;
+
+            if !found {
+                return "not found".to_string();
+            }
+            if remove {
+                feeds.remove(index);
+            }
         }
 
-        if found {
-            if remove {
-                self.feeds.lock().await.remove(index);
-            }
-            self.store().await;
-            "unsubscribed".to_string()
-        } else {
-            "not found".to_string()
-        }
+        self.store().await;
+        "unsubscribed".to_string()
     }
 
     pub async fn channel_subs(&self, channel_id: ChannelId) -> String {
@@ -261,7 +276,7 @@ impl RssFeeds {
         let r2 = Arc::clone(rssmgr);
         r2.load().await;
 
-        let _t = tokio::spawn(async move{
+        let _t = tokio::spawn(async move {
             r2.cron(&httpc).await;
         });
     }
