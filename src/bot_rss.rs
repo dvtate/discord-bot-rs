@@ -31,7 +31,7 @@ async fn fetch_feed<T: reqwest::IntoUrl>(url: T) -> Result<feed_rs::model::Feed,
     let content = reqwest::get(url.as_str().to_string()).await?.bytes().await?.reader();
     let parser = feed_rs::parser::Builder::new().base_uri(Some(&url.as_str())).build();
     let feed = parser.parse(content)?;
-    log!("Feed {} has {} entries.", &url.as_str(), feed.entries.len());
+    // log!("Feed {} has {} entries.", &url.as_str(), feed.entries.len());
     Ok(feed)
 }
 
@@ -252,7 +252,9 @@ impl RssFeeds {
         let mut ret: String = "".to_string();
         for f in self.feeds.lock().await.iter() {
             if f.channels.contains(&channel_id) {
+                ret += "- ";
                 ret += &f.url;
+                ret += "\n";
             }
         }
         return ret;
