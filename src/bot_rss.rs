@@ -261,15 +261,17 @@ impl RssFeeds {
     }
 
     async fn cron(&self, http: &Arc<serenity::http::Http>) {
-        // self.load().await;
-        // TODO do these in parallel
-        for f in self.feeds.lock().await.iter_mut() {
-            f.fetch(http).await;
+        loop {
+            // Every 5 mins
+            tokio::time::sleep(Duration::from_secs(60 * 5)).await;
+            
+            // Fetch feeds
+            // self.load().await;
+            // TODO do these in parallel
+            for f in self.feeds.lock().await.iter_mut() {
+                f.fetch(http).await;
+            }
         }
-
-        // Check again every 5 mins
-        tokio::time::sleep(Duration::from_secs(60*5)).await;
-        Box::pin(self.cron(http)).await;
     }
 
     pub async fn start(rssmgr: &Arc<RssFeeds>, http: &Arc<serenity::http::Http>) {

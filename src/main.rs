@@ -1,4 +1,5 @@
 mod bot_rss;
+// mod new_members;
 mod commands;
 
 use std::env;
@@ -10,7 +11,7 @@ use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMess
 use serenity::model::application::{Command, Interaction};
 use serenity::model::gateway::Ready;
 // use serenity::model::id::GuildId;
-// use serenity::model::guild::Member;
+use serenity::model::guild::Member;
 use serenity::prelude::*;
 
 struct Handler {
@@ -43,7 +44,9 @@ impl EventHandler for Handler {
 
     // TODO new member announcements
     // async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
-    //     // new_member.guild_id
+        // new_member.guild_id
+        // new_members.handle(&ctx, &new_member);
+        // new_member.guild_id.to_guild_cached(&ctx.cache).
     // }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
